@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>V2/Xray Checker</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { padding: 24px; background: #0b0f14; color: #e2e8f0; }
+    .brand { font-weight: 700; letter-spacing:.3px; }
+    .card { background:#0f1621; border:1px solid #1f2937; }
+    .form-control, .form-check-input { background:#111827; border-color:#374151; color:#e5e7eb; }
+    .btn-primary { background:#2563eb; border-color:#2563eb; }
+    .btn-outline-primary { border-color:#2563eb; color:#93c5fd; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    .cfg { font-size:.9rem; word-break: break-all; }
+    .qr { width:180px; height:180px; background:#fff; border-radius:8px; padding:10px; display:flex; align-items:center; justify-content:center; }
+    .muted { color:#94a3b8; }
+    .topbar { display:flex; gap:12px; align-items:center; justify-content:space-between; margin-bottom:16px; }
+    .list-group-item { background:#0f1621; color:#e2e8f0; border-color:#1f2937; }
+    .small-muted { font-size:.9rem; color:#9ca3af; }
+  </style>
+</head>
+<body>
+  <div class="container-xxl">
+    <div class="topbar">
+      <h2 class="brand mb-0">V2/Xray Checker</h2>
+      <div class="d-flex align-items-center gap-2">
+        <input id="apiKey" type="password" class="form-control form-control-sm" placeholder="API ключ" style="width:260px;">
+        <button id="btnSaveKey" class="btn btn-sm btn-primary">Войти</button>
+        <button id="btnClearKey" class="btn btn-sm btn-outline-light">Выйти</button>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-body d-flex flex-wrap align-items-center gap-4">
+        <div>
+          <div class="muted mb-1">Мастер-ссылка на все рабочие конфиги (RAW):</div>
+          <div class="d-flex gap-2 flex-wrap">
+            <a id="masterLink" class="btn btn-sm btn-outline-primary" target="_blank">Открыть RAW</a>
+            <button id="btnCopyMaster" class="btn btn-sm btn-outline-light" type="button">Скопировать URL</button>
+
+            <div class="vr"></div>
+
+            <div class="input-group input-group-sm" style="width:180px;">
+              <span class="input-group-text">Нужно</span>
+              <input id="needCount" type="number" class="form-control" min="1" value="25">
+            </div>
+            <button id="btnRescan" class="btn btn-sm btn-primary">Рескан</button>
+          </div>
+          <div class="small-muted mt-2">Эта ссылка и QR ведут на <code>/raw/working?key=…</code>. Можно скормить напрямую клиенту/скрипту.</div>
+          <div class="mt-2">
+            <span class="muted">Статус:</span> <span id="status" class="text-warning">не авторизован</span>
+            <span class="ms-3 muted">Рабочих конфигов:</span> <span id="count" class="badge bg-primary">0</span>
+            <button id="btnRefresh" class="btn btn-sm btn-outline-primary ms-3">Обновить</button>
+            <div class="form-check form-check-inline ms-2">
+              <input class="form-check-input" type="checkbox" id="autoReload">
+              <label class="form-check-label muted" for="autoReload">авто</label>
+            </div>
+          </div>
+        </div>
+        <div class="qr"><canvas id="masterQr" width="160" height="160"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Список рабочих конфигов</div>
+      <div class="card-body">
+        <ul id="list" class="list-group"></ul>
+        <div class="small-muted mt-2" id="meta"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrious/4.0.2/qrious.min.js"></script>
+  <script>
+    const $ = s => document.querySelector(s);
+    const statusEl = $('#status'), countEl = $('#count'), listEl = $('#list'), meta = $('#meta');
+    const masterQrCanvas = $('#masterQr'), masterLink = $('#masterLink'), btnCopyMaster = $('#btnCopyMaster');
+    const btnRefresh = $('#btnRefresh'), autoReload = $('#autoReload');
+    const keyInput = $('#apiKey'), btnSaveKey = $('#btnSaveKey'), btnClearKey = $('#btnClearKey');
+    const needCount = $('#needCount'), btnRescan = $('#btnRescan');
+    let timer = null, qrObj = null;
+
+    function getKey(){ return localStorage.getItem('api_key') || ''; }
+    function setKey(v){ localStorage.setItem('api_key', v || ''); }
+    function clearKey(){ localStorage.removeItem('api_key'); }
+
+    function masterURL(){
+      const u = new URL('/raw/working', location.origin);
+      const k = getKey(); if(k) u.searchParams.set('key', k);
+      return u.toString();
+    }
+
+    async function ping(){
+      const res = await fetch('/api/ping?key='+encodeURIComponent(getKey()));
+      return res.ok;
+    }
+
+    function drawMasterQR(url){
+      if(!qrObj){ qrObj = new QRious({ element: masterQrCanvas, value: url, size: 160, background: 'white', foreground: '#000' }); }
+      else { qrObj.value = url; }
+    }
+
+    function renderMasterLink(){
+      const url = masterURL();
+      masterLink.href = url;
+      drawMasterQR(url);
+    }
+
+    function renderList(items){
+      listEl.innerHTML = '';
+      if(!items || !items.length){
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.textContent = '(пусто)';
+        listEl.appendChild(li);
+        return;
+      }
+      items.forEach((cfg, i) => {
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex';
+        const idx = document.createElement('div'); idx.className = 'me-2 text-muted'; idx.textContent = String(i+1).padStart(2,'0') + '.';
+        const txt = document.createElement('div'); txt.className='mono cfg'; txt.textContent = cfg;
+        li.appendChild(idx); li.appendChild(txt); listEl.appendChild(li);
+      });
+    }
+
+    async function refresh(){
+      const k = getKey();
+      renderMasterLink();
+      if(!k){ statusEl.textContent='не авторизован'; renderList([]); countEl.textContent='0'; return; }
+      statusEl.textContent='обновление...';
+      try{
+        const res = await fetch('/api/working?key='+encodeURIComponent(k));
+        if(!res.ok){ throw new Error('unauthorized'); }
+        const data = await res.json();
+        countEl.textContent = data.count || 0;
+        renderList(data.items || []);
+        statusEl.textContent = data.running ? 'идёт сканирование…' : 'ок';
+        meta.textContent = 'Обновлено: ' + new Date().toLocaleString();
+      }catch(e){
+        statusEl.textContent='ошибка или неверный ключ';
+        renderList([]); countEl.textContent='0';
+      }
+    }
+
+    async function copyText(text){
+      try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; } } catch(_) {}
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.position='fixed'; ta.style.opacity='0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      let ok=false; try { ok=document.execCommand('copy'); } catch(_){}
+      document.body.removeChild(ta); return ok;
+    }
+
+    // события
+    btnSaveKey.addEventListener('click', async ()=>{ setKey(keyInput.value.trim()); statusEl.textContent = (await ping()) ? 'ок' : 'не авторизован'; refresh(); });
+    btnClearKey.addEventListener('click', ()=>{ clearKey(); keyInput.value=''; refresh(); });
+    btnRefresh.addEventListener('click', refresh);
+    btnCopyMaster.addEventListener('click', async ()=>{ const ok = await copyText(masterURL()); btnCopyMaster.textContent = ok ? 'Скопировано' : 'Не удалось'; setTimeout(()=>btnCopyMaster.textContent='Скопировать URL', 1200); });
+
+    btnRescan.addEventListener('click', async ()=>{
+      const k = getKey(); if(!k){ alert('Введите ключ'); return; }
+      const max = Math.max(1, parseInt(needCount.value||'25',10) || 25);
+      try{
+        const res = await fetch('/api/rescan?key='+encodeURIComponent(k), {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({max})
+        });
+        if(res.status === 409){ alert('Сканирование уже выполняется'); return; }
+        if(!res.ok){ throw new Error('rescan failed'); }
+        statusEl.textContent = 'идёт сканирование…';
+        refresh();
+        if(!autoReload.checked){ autoReload.checked=true; timer=setInterval(refresh, 4000); }
+      }catch(e){
+        alert('Ошибка запуска рескана');
+      }
+    });
+
+    autoReload.addEventListener('change', ()=>{
+      if(autoReload.checked){ timer = setInterval(refresh, 4000); } else { clearInterval(timer); timer=null; }
+    });
+
+    // init
+    keyInput.value = getKey();
+    renderMasterLink();
+    refresh();
+  </script>
+</body>
+</html>
